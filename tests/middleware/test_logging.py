@@ -5,6 +5,7 @@ import logging
 import socket
 import sys
 from collections.abc import Iterator
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 import httpx
@@ -15,7 +16,7 @@ from websockets.protocol import State
 from tests.utils import run_server
 from uvicorn import Config
 from uvicorn._types import ASGIReceiveCallable, ASGISendCallable, Scope
-from uvicorn.logging import strip_ansi
+from uvicorn.logging import AccessFormatter, strip_ansi
 
 if TYPE_CHECKING:
     import sys
@@ -38,6 +39,12 @@ def caplog_for_logger(caplog: pytest.LogCaptureFixture, logger_name: str) -> Ite
     finally:
         logger.removeHandler(caplog.handler)
         logger.propagate = old_propagate
+
+
+def oldformat(logging_config: dict[str, Any]) -> dict[str, Any]:
+    cfg = deepcopy(logging_config)
+    cfg["formatters"]["access"]["fmt"] = '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s'
+    return cfg
 
 
 async def app(scope: Scope, receive: ASGIReceiveCallable, send: ASGISendCallable):
@@ -126,7 +133,12 @@ async def test_trace_logging_on_ws_protocol(
 async def test_access_logging(
     use_colors: bool, caplog: pytest.LogCaptureFixture, logging_config: dict[str, Any], unused_tcp_port: int
 ):
-    config = Config(app=app, use_colors=use_colors, log_config=logging_config, port=unused_tcp_port)
+    config = Config(
+        app=app,
+        use_colors=use_colors,
+        log_config=oldformat(logging_config),
+        port=unused_tcp_port,
+    )
     with caplog_for_logger(caplog, "uvicorn.access"):
         async with run_server(config):
             async with httpx.AsyncClient() as client:
@@ -134,19 +146,19 @@ async def test_access_logging(
 
         assert response.status_code == 204
         messages = [record.message for record in caplog.records if record.name == "uvicorn.access"]
-        stripped = strip_ansi(messages.pop())
-        assert "127.0.0.1" in stripped
-        assert "204" in stripped
-        assert "GET" in stripped
-        assert "/" in stripped
-        assert "ms" in stripped
+        assert '"GET / HTTP/1.1" 204' in messages.pop()
 
 
 @pytest.mark.parametrize("use_colors", [(True), (False)])
 async def test_default_logging(
     use_colors: bool, caplog: pytest.LogCaptureFixture, logging_config: dict[str, Any], unused_tcp_port: int
 ):
-    config = Config(app=app, use_colors=use_colors, log_config=logging_config, port=unused_tcp_port)
+    config = Config(
+        app=app,
+        use_colors=use_colors,
+        log_config=oldformat(logging_config),
+        port=unused_tcp_port,
+    )
     with caplog_for_logger(caplog, "uvicorn.access"):
         async with run_server(config):
             async with httpx.AsyncClient() as client:
@@ -158,7 +170,53 @@ async def test_default_logging(
         assert "ASGI 'lifespan' protocol appears unsupported" in messages.pop(0)
         assert "Application startup complete" in messages.pop(0)
         assert "Uvicorn running on http://127.0.0.1" in messages.pop(0)
-        stripped = strip_ansi(messages.pop(0))
+        assert '"GET / HTTP/1.1" 204' in messages.pop(0)
+        assert "Shutting down" in messages.pop(0)
+
+
+@pytest.mark.parametrize("use_colors", [(True), (False)])
+async def test_access_logging_new_format(
+    use_colors: bool, caplog: pytest.LogCaptureFixture, logging_config: dict[str, Any], unused_tcp_port: int
+):
+    config = Config(app=app, use_colors=use_colors, log_config=logging_config, port=unused_tcp_port)
+    with caplog_for_logger(caplog, "uvicorn.access"):
+        async with run_server(config):
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"http://127.0.0.1:{unused_tcp_port}")
+
+        assert response.status_code == 204
+        formatter = AccessFormatter(fmt=logging_config["formatters"]["access"]["fmt"], use_colors=False)
+        lines = [strip_ansi(formatter.format(record)) for record in caplog.records if record.name == "uvicorn.access"]
+        stripped = lines.pop()
+        assert "127.0.0.1" in stripped
+        assert "204" in stripped
+        assert "GET" in stripped
+        assert "/" in stripped
+        assert "ms" in stripped
+
+
+async def test_default_logging_new_format(
+    caplog: pytest.LogCaptureFixture, logging_config: dict[str, Any], unused_tcp_port: int
+):
+    config = Config(app=app, log_config=logging_config, port=unused_tcp_port)
+    with caplog_for_logger(caplog, "uvicorn.access"):
+        async with run_server(config):
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"http://127.0.0.1:{unused_tcp_port}")
+        assert response.status_code == 204
+        messages = [
+            record.message for record in caplog.records if "uvicorn" in record.name and record.name != "uvicorn.access"
+        ]
+        assert "Started server process" in messages.pop(0)
+        assert "Waiting for application startup" in messages.pop(0)
+        assert "ASGI 'lifespan' protocol appears unsupported" in messages.pop(0)
+        assert "Application startup complete" in messages.pop(0)
+        assert "Uvicorn running on http://127.0.0.1" in messages.pop(0)
+        formatter = AccessFormatter(fmt=logging_config["formatters"]["access"]["fmt"], use_colors=False)
+        access_lines = [
+            strip_ansi(formatter.format(record)) for record in caplog.records if record.name == "uvicorn.access"
+        ]
+        stripped = access_lines.pop(0)
         assert "127.0.0.1" in stripped
         assert "204" in stripped
         assert "GET" in stripped
@@ -299,12 +357,7 @@ async def test_unknown_status_code(caplog: pytest.LogCaptureFixture, unused_tcp_
 
         assert response.status_code == 599
         messages = [record.message for record in caplog.records if record.name == "uvicorn.access"]
-        stripped = strip_ansi(messages.pop())
-        assert "127.0.0.1" in stripped
-        assert "599" in stripped
-        assert "GET" in stripped
-        assert "/" in stripped
-        assert "ms" in stripped
+        assert '"GET / HTTP/1.1" 599' in messages.pop()
 
 
 async def test_server_start_with_port_zero(caplog: pytest.LogCaptureFixture):

@@ -340,7 +340,10 @@ class AccessLogMiddleware:
                     duration=time.perf_counter() - start,
                     extra=www_scope.get("state", {}).get("log_extra", ""),
                 )
-                logger.info(_assemble_access_log(fields), extra=fields)
+                logger.info(
+                    f'{fields["client_addr"]} - "{fields["request_line"]}" {fields["status_code"]}',
+                    extra=fields,
+                )
             await send(message)
 
         return await self.app(scope, receive, wrapped_send)

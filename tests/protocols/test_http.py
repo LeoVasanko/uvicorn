@@ -355,12 +355,7 @@ async def test_request_logging(path: str, http_protocol_cls: type[HTTPProtocol],
     protocol = get_connected_protocol(app, http_protocol_cls, log_config=None)
     protocol.data_received(get_request_with_query_string)
     await protocol.loop.run_one()
-    message = caplog.records[0].message
-    assert "127.0.0.1" in message
-    assert "200" in message
-    assert "GET" in message
-    assert path in message
-    assert "ms" in message
+    assert f'"GET {path} HTTP/1.1" 200' in caplog.records[0].message
 
 
 async def test_head_request(http_protocol_cls: type[HTTPProtocol]):
