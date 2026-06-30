@@ -29,9 +29,7 @@ from uvicorn.config import Config, UvicornDeprecationWarning
 from uvicorn.logging import TRACE_LOG_LEVEL
 from uvicorn.protocols.utils import (
     ClientDisconnected,
-    get_client_addr,
     get_local_addr,
-    get_path_with_query_string,
     get_remote_addr,
     is_ssl,
 )
@@ -113,8 +111,9 @@ class WebSocketProtocol(WebSocketServerProtocol):
             ping_interval=self.config.ws_ping_interval,
             ping_timeout=self.config.ws_ping_timeout,
             extensions=extensions,
-            logger=logging.getLogger("uvicorn.error"),
+            logger=logging.getLogger("uvicorn.ws"),
         )
+        self.uvicorn_logger = logging.getLogger("uvicorn.error")
         self.server_header = None
         self.extra_headers = [
             (name.decode("latin-1"), value.decode("latin-1")) for name, value in server_state.default_headers
@@ -129,18 +128,18 @@ class WebSocketProtocol(WebSocketServerProtocol):
         self.client = get_remote_addr(transport)
         self.scheme = "wss" if is_ssl(transport) else "ws"
 
-        if self.logger.isEnabledFor(TRACE_LOG_LEVEL):
+        if self.uvicorn_logger.isEnabledFor(TRACE_LOG_LEVEL):
             prefix = "%s:%d - " % self.client if self.client else ""
-            self.logger.log(TRACE_LOG_LEVEL, "%sWebSocket connection made", prefix)
+            self.uvicorn_logger.log(TRACE_LOG_LEVEL, "%sWebSocket connection made", prefix)
 
         super().connection_made(transport)
 
     def connection_lost(self, exc: Exception | None) -> None:
         self.connections.remove(self)
 
-        if self.logger.isEnabledFor(TRACE_LOG_LEVEL):
+        if self.uvicorn_logger.isEnabledFor(TRACE_LOG_LEVEL):
             prefix = "%s:%d - " % self.client if self.client else ""
-            self.logger.log(TRACE_LOG_LEVEL, "%sWebSocket connection lost", prefix)
+            self.uvicorn_logger.log(TRACE_LOG_LEVEL, "%sWebSocket connection lost", prefix)
 
         self.lost_connection_before_handshake = not self.handshake_completed_event.is_set()
         self.handshake_completed_event.set()
@@ -249,7 +248,7 @@ class WebSocketProtocol(WebSocketServerProtocol):
             self.closed_event.set()
         except BaseException:
             self.closed_event.set()
-            self.logger.exception("Exception in ASGI application\n")
+            self.uvicorn_logger.exception("Exception in ASGI application\n")
             if not self.handshake_started_event.is_set():
                 self.send_500_response()
             else:
@@ -257,21 +256,16 @@ class WebSocketProtocol(WebSocketServerProtocol):
         else:
             self.closed_event.set()
             if not self.handshake_started_event.is_set():
-                self.logger.error("ASGI callable returned without sending handshake.")
+                self.uvicorn_logger.error("ASGI callable returned without sending handshake.")
                 self.send_500_response()
             elif result is not None:
-                self.logger.error("ASGI callable should return None, but returned '%s'.", result)
+                self.uvicorn_logger.error("ASGI callable should return None, but returned '%s'.", result)
             await self.handshake_completed_event.wait()
         self.transport.close()
 
     async def asgi_send(self, message: ASGISendEvent) -> None:
         if not self.handshake_started_event.is_set():
             if message["type"] == "websocket.accept":
-                self.logger.info(
-                    '%s - "WebSocket %s" [accepted]',
-                    get_client_addr(self.scope),
-                    get_path_with_query_string(self.scope),
-                )
                 self.initial_response = None
                 self.accepted_subprotocol = cast(Subprotocol | None, message.get("subprotocol"))
                 if "headers" in message:
@@ -284,22 +278,11 @@ class WebSocketProtocol(WebSocketServerProtocol):
                 self.handshake_started_event.set()
 
             elif message["type"] == "websocket.close":
-                self.logger.info(
-                    '%s - "WebSocket %s" 403',
-                    get_client_addr(self.scope),
-                    get_path_with_query_string(self.scope),
-                )
                 self.initial_response = (http.HTTPStatus.FORBIDDEN, [], b"")
                 self.handshake_started_event.set()
                 self.closed_event.set()
 
             elif message["type"] == "websocket.http.response.start":
-                self.logger.info(
-                    '%s - "WebSocket %s" %d',
-                    get_client_addr(self.scope),
-                    get_path_with_query_string(self.scope),
-                    message["status"],
-                )
                 # websockets requires the status to be an enum. look it up.
                 status = http.HTTPStatus(message["status"])
                 headers = [

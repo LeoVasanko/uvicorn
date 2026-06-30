@@ -15,6 +15,7 @@ from websockets.protocol import State
 from tests.utils import run_server
 from uvicorn import Config
 from uvicorn._types import ASGIReceiveCallable, ASGISendCallable, Scope
+from uvicorn.logging import strip_ansi
 
 if TYPE_CHECKING:
     import sys
@@ -133,7 +134,12 @@ async def test_access_logging(
 
         assert response.status_code == 204
         messages = [record.message for record in caplog.records if record.name == "uvicorn.access"]
-        assert '"GET / HTTP/1.1" 204' in messages.pop()
+        stripped = strip_ansi(messages.pop())
+        assert "127.0.0.1" in stripped
+        assert "204" in stripped
+        assert "GET" in stripped
+        assert "/" in stripped
+        assert "ms" in stripped
 
 
 @pytest.mark.parametrize("use_colors", [(True), (False)])
@@ -152,7 +158,12 @@ async def test_default_logging(
         assert "ASGI 'lifespan' protocol appears unsupported" in messages.pop(0)
         assert "Application startup complete" in messages.pop(0)
         assert "Uvicorn running on http://127.0.0.1" in messages.pop(0)
-        assert '"GET / HTTP/1.1" 204' in messages.pop(0)
+        stripped = strip_ansi(messages.pop(0))
+        assert "127.0.0.1" in stripped
+        assert "204" in stripped
+        assert "GET" in stripped
+        assert "/" in stripped
+        assert "ms" in stripped
         assert "Shutting down" in messages.pop(0)
 
 
@@ -182,6 +193,98 @@ async def test_running_log_using_fd(caplog: pytest.LogCaptureFixture, unused_tcp
     assert f"Uvicorn running on socket {sockname} (Press CTRL+C to quit)" in messages
 
 
+async def test_websocket_access_logging(
+    ws_protocol_cls: WSProtocol,
+    caplog: pytest.LogCaptureFixture,
+    logging_config: dict[str, Any],
+    unused_tcp_port: int,
+):
+    async def websocket_app(scope: Scope, receive: ASGIReceiveCallable, send: ASGISendCallable):
+        assert scope["type"] == "websocket"
+        while True:
+            message = await receive()
+            if message["type"] == "websocket.connect":
+                await send({"type": "websocket.accept"})
+            elif message["type"] == "websocket.disconnect":
+                break
+
+    async def open_and_close(url: str):
+        async with connect(url) as websocket:
+            await websocket.close()
+
+    config = Config(
+        app=websocket_app,
+        log_config=logging_config,
+        ws=ws_protocol_cls,
+        port=unused_tcp_port,
+    )
+    with caplog_for_logger(caplog, "uvicorn.access"):
+        async with run_server(config):
+            await open_and_close(f"ws://127.0.0.1:{unused_tcp_port}")
+
+    open_messages = [
+        strip_ansi(record.message)
+        for record in caplog.records
+        if record.name == "uvicorn.access" and "🔌" in record.message
+    ]
+    close_messages = [
+        strip_ansi(record.message)
+        for record in caplog.records
+        if record.name == "uvicorn.access" and "closed" in record.message
+    ]
+    assert len(open_messages) == 1
+    assert "127.0.0.1" in open_messages[0]
+    assert "/" in open_messages[0]
+    assert len(close_messages) == 1
+    assert "1000" in close_messages[0]
+    assert "ms" in close_messages[0]
+
+
+async def test_websocket_http_response_access_logging(
+    ws_protocol_cls: WSProtocol,
+    caplog: pytest.LogCaptureFixture,
+    logging_config: dict[str, Any],
+    unused_tcp_port: int,
+):
+    async def websocket_app(scope: Scope, receive: ASGIReceiveCallable, send: ASGISendCallable):
+        assert scope["type"] == "websocket"
+        while True:
+            message = await receive()
+            if message["type"] == "websocket.connect":
+                await send(
+                    {
+                        "type": "websocket.http.response.start",
+                        "status": 403,
+                        "headers": [(b"content-type", b"text/plain")],
+                    }
+                )
+                await send({"type": "websocket.http.response.body", "body": b"Forbidden", "more_body": False})
+                break
+
+    config = Config(
+        app=websocket_app,
+        log_config=logging_config,
+        ws=ws_protocol_cls,
+        port=unused_tcp_port,
+    )
+    with caplog_for_logger(caplog, "uvicorn.access"):
+        async with run_server(config):
+            with contextlib.suppress(Exception):
+                async with connect(f"ws://127.0.0.1:{unused_tcp_port}"):
+                    pass
+
+    messages = [
+        strip_ansi(record.message)
+        for record in caplog.records
+        if record.name == "uvicorn.access" and "🔌" in record.message
+    ]
+    assert len(messages) == 1
+    assert "127.0.0.1" in messages[0]
+    assert "403" in messages[0]
+    assert "/" in messages[0]
+    assert "ms" in messages[0]
+
+
 async def test_unknown_status_code(caplog: pytest.LogCaptureFixture, unused_tcp_port: int):
     async def app(scope: Scope, receive: ASGIReceiveCallable, send: ASGISendCallable):
         assert scope["type"] == "http"
@@ -196,7 +299,12 @@ async def test_unknown_status_code(caplog: pytest.LogCaptureFixture, unused_tcp_
 
         assert response.status_code == 599
         messages = [record.message for record in caplog.records if record.name == "uvicorn.access"]
-        assert '"GET / HTTP/1.1" 599' in messages.pop()
+        stripped = strip_ansi(messages.pop())
+        assert "127.0.0.1" in stripped
+        assert "599" in stripped
+        assert "GET" in stripped
+        assert "/" in stripped
+        assert "ms" in stripped
 
 
 async def test_server_start_with_port_zero(caplog: pytest.LogCaptureFixture):

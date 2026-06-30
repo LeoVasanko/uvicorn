@@ -19,6 +19,7 @@ from uvicorn._compat import iscoroutinefunction
 from uvicorn._types import ASGIApplication
 from uvicorn.importer import ImportFromStringError, import_from_string
 from uvicorn.logging import TRACE_LOG_LEVEL
+from uvicorn.middleware.access_logging import AccessLogMiddleware
 from uvicorn.middleware.asgi2 import ASGI2Middleware
 from uvicorn.middleware.message_logger import MessageLoggerMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
@@ -87,7 +88,8 @@ LOGGING_CONFIG: dict[str, Any] = {
         },
         "access": {
             "()": "uvicorn.logging.AccessFormatter",
-            "fmt": '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',  # noqa: E501
+            "fmt": "%(client)s %(status)s %(method)s %(host)s%(path)s %(extra)s%(timing)s",
+            "use_colors": None,
         },
     },
     "handlers": {
@@ -106,6 +108,7 @@ LOGGING_CONFIG: dict[str, Any] = {
         "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
         "uvicorn.error": {"level": "INFO"},
         "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
+        "uvicorn.ws": {"level": "WARNING"},
     },
 }
 
@@ -522,6 +525,8 @@ class Config:
             self.loaded_app = MessageLoggerMiddleware(self.loaded_app)
         if self.proxy_headers:
             self.loaded_app = ProxyHeadersMiddleware(self.loaded_app, trusted_hosts=self.forwarded_allow_ips)
+        if self.access_log:
+            self.loaded_app = AccessLogMiddleware(self.loaded_app)
 
         self.loaded = True
 

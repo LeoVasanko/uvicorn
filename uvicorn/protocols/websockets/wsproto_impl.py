@@ -26,9 +26,7 @@ from uvicorn.config import Config
 from uvicorn.logging import TRACE_LOG_LEVEL
 from uvicorn.protocols.utils import (
     ClientDisconnected,
-    get_client_addr,
     get_local_addr,
-    get_path_with_query_string,
     get_remote_addr,
     is_ssl,
 )
@@ -354,11 +352,6 @@ class WSProtocol(asyncio.Protocol):
 
         if not self.handshake_complete:
             if message["type"] == "websocket.accept":
-                self.logger.info(
-                    '%s - "WebSocket %s" [accepted]',
-                    get_client_addr(self.scope),
-                    get_path_with_query_string(self.scope),
-                )
                 subprotocol = message.get("subprotocol")
                 extra_headers = self.default_headers + list(message.get("headers", []))
                 extensions: list[Extension] = []
@@ -378,11 +371,6 @@ class WSProtocol(asyncio.Protocol):
 
             elif message["type"] == "websocket.close":
                 self.queue.put_nowait({"type": "websocket.disconnect", "code": 1006})
-                self.logger.info(
-                    '%s - "WebSocket %s" 403',
-                    get_client_addr(self.scope),
-                    get_path_with_query_string(self.scope),
-                )
                 self.handshake_complete = True
                 self.close_sent = True
                 event = events.RejectConnection(status_code=403, headers=[])
@@ -395,12 +383,6 @@ class WSProtocol(asyncio.Protocol):
                 if not (100 <= message["status"] < 600):
                     msg = "Invalid HTTP status code '%d' in response."
                     raise RuntimeError(msg % message["status"])
-                self.logger.info(
-                    '%s - "WebSocket %s" %d',
-                    get_client_addr(self.scope),
-                    get_path_with_query_string(self.scope),
-                    message["status"],
-                )
                 self.handshake_complete = True
                 event = events.RejectConnection(
                     status_code=message["status"],

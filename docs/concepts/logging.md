@@ -6,6 +6,7 @@ module, and provides three loggers out of the box:
 | `uvicorn`        | Parent logger (rarely used directly)               |
 | `uvicorn.error`  | Server-level messages (startup, shutdown, errors)   |
 | `uvicorn.access` | Per-request access log lines                        |
+| `uvicorn.ws`     | WebSocket library logs (errors only)                |
 
 !!! note
     Despite its name, `uvicorn.error` is **not** limited to error messages.
@@ -31,7 +32,8 @@ LOGGING_CONFIG = {
         },
         "access": {
             "()": "uvicorn.logging.AccessFormatter",
-            "fmt": '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
+            "fmt": "%(client)s %(status)s %(method)s %(host)s%(path)s %(extra)s%(timing)s",
+            "use_colors": None,
         },
     },
     "handlers": {
@@ -50,6 +52,7 @@ LOGGING_CONFIG = {
         "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
         "uvicorn.error": {"level": "INFO"},
         "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
+        "uvicorn.ws": {"level": "WARNING"},
     },
 }
 ```
@@ -313,7 +316,9 @@ loggers:
 ```
 
 !!! warning
-    When using a standard `logging.Formatter` for the access logger, the
-    `%(client_addr)s`, `%(request_line)s`, and `%(status_code)s` placeholders
-    are **not** available. The access log line will be formatted using only the
-    standard `%(message)s` field.
+    The `%(client)s`, `%(status)s`, `%(method)s`, `%(host)s`, `%(path)s`,
+    `%(extra)s`, and `%(timing)s` placeholders are supplied by the access-log
+    middleware and may contain ANSI color codes. They are intended for use with
+    `uvicorn.logging.AccessFormatter`. If you use a standard
+    `logging.Formatter`, use the plain `%(client_addr)s`,
+    `%(request_line)s`, and `%(status_code)s` placeholders instead.

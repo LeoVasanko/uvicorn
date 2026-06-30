@@ -21,6 +21,7 @@ from tests.custom_loop_utils import CustomLoop
 from tests.utils import as_cwd, get_asyncio_default_loop_per_os
 from uvicorn._types import ASGIApplication, ASGIReceiveCallable, ASGISendCallable, Environ, Scope, StartResponse
 from uvicorn.config import Config, LoopFactoryType, UvicornDeprecationWarning
+from uvicorn.middleware.access_logging import AccessLogMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from uvicorn.middleware.wsgi import WSGIMiddleware
 from uvicorn.protocols.http.h11_impl import H11Protocol
@@ -192,7 +193,8 @@ def test_wsgi_app() -> None:
     config = Config(app=wsgi_app, interface="wsgi", proxy_headers=False)
     config.load()
 
-    assert isinstance(config.loaded_app, WSGIMiddleware)
+    assert isinstance(config.loaded_app, AccessLogMiddleware)
+    assert isinstance(config.loaded_app.app, WSGIMiddleware)
     assert config.interface == "wsgi"
     assert config.asgi_version == "3.0"
 
@@ -202,7 +204,8 @@ def test_proxy_headers() -> None:
     config.load()
 
     assert config.proxy_headers is True
-    assert isinstance(config.loaded_app, ProxyHeadersMiddleware)
+    assert isinstance(config.loaded_app, AccessLogMiddleware)
+    assert isinstance(config.loaded_app.app, ProxyHeadersMiddleware)
 
 
 def test_app_unimportable_module() -> None:
@@ -230,7 +233,8 @@ def test_app_factory(caplog: pytest.LogCaptureFixture) -> None:
 
     config = Config(app=create_app, factory=True, proxy_headers=False)
     config.load()
-    assert config.loaded_app is asgi_app
+    assert isinstance(config.loaded_app, AccessLogMiddleware)
+    assert config.loaded_app.app is asgi_app
 
     # Flag not passed. In this case, successfully load the app, but issue a warning
     # to indicate that an explicit flag is preferred.
@@ -238,7 +242,8 @@ def test_app_factory(caplog: pytest.LogCaptureFixture) -> None:
     config = Config(app=create_app, proxy_headers=False)
     with caplog.at_level(logging.WARNING):
         config.load()
-    assert config.loaded_app is asgi_app
+    assert isinstance(config.loaded_app, AccessLogMiddleware)
+    assert config.loaded_app.app is asgi_app
     assert len(caplog.records) == 1
     assert "--factory" in caplog.records[0].message
 
