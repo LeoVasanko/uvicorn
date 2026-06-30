@@ -47,6 +47,24 @@ def _pad_display(text: str, width: int) -> str:
     return text + " " * max(width - _display_width(text), 0)
 
 
+def _format_duration_ms(duration_ms: float) -> str:
+    ms = int(duration_ms)
+    if ms < 2000:
+        return f"{ms}ms"
+
+    total_s = ms // 1000
+    if total_s < 60:
+        return f"{total_s}s"
+
+    if total_s < 3600:
+        minutes, seconds = divmod(total_s, 60)
+        return f"{minutes}m{seconds}s"
+
+    hours, remainder = divmod(total_s, 3600)
+    minutes = remainder // 60
+    return f"{hours}h{minutes}m"
+
+
 def _status_color(status: int) -> str:
     if status < 200:
         return _STATUS_INFO
@@ -163,7 +181,7 @@ def _http_access_log_extra(
     method = method if method is not None else cast(str, scope.get("method", "-"))
     method = scope.get("state", {}).get("access_log_method") or method
     http_version = scope.get("http_version", "-")
-    timing = f"{duration * 1000:.0f}ms"
+    timing = _format_duration_ms(duration * 1000)
 
     try:
         status_phrase = http.HTTPStatus(status).phrase
@@ -253,7 +271,7 @@ def _ws_close_extra(
     path = scope.get("path", "-")
     full_path = _path(scope)
     http_version = scope.get("http_version", "-")
-    timing = f"{duration * 1000:.0f}ms"
+    timing = _format_duration_ms(duration * 1000)
 
     if close_code is None:
         code = "----"
