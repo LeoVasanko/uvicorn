@@ -47,20 +47,20 @@ def _pad_display(text: str, width: int) -> str:
     return text + " " * max(width - _display_width(text), 0)
 
 
-def _format_duration_ms(duration_ms: float) -> str:
-    ms = int(duration_ms)
+def _format_duration(duration: float) -> str:
+    ms = int(duration * 1000)
     if ms < 2000:
         return f"{ms}ms"
 
-    total_s = ms // 1000
-    if total_s < 60:
-        return f"{total_s}s"
+    total_seconds = ms // 1000
+    if total_seconds < 60:
+        return f"{total_seconds}s"
 
-    if total_s < 3600:
-        minutes, seconds = divmod(total_s, 60)
+    if total_seconds < 3600:
+        minutes, seconds = divmod(total_seconds, 60)
         return f"{minutes}m{seconds}s"
 
-    hours, remainder = divmod(total_s, 3600)
+    hours, remainder = divmod(total_seconds, 3600)
     minutes = remainder // 60
     return f"{hours}h{minutes}m"
 
@@ -78,9 +78,12 @@ def _status_color(status: int) -> str:
 
 
 def _method_color(method: str) -> str:
-    if method in ("GET", "HEAD", "OPTIONS"):
-        return _METHOD_READ
-    return _METHOD_WRITE
+    return _METHOD_READ if method in ("GET", "HEAD", "OPTIONS") else _METHOD_WRITE
+
+
+def _format_extra_timing(extra: str = "", duration: float | None = None) -> tuple[str, str]:
+    timing = _format_duration(duration) if duration is not None else ""
+    return (f"{extra} " if extra else "", f"{_TIMING}{timing}{_RESET}" if timing else "")
 
 
 def _format_ipv6_network(ip: str) -> str:
@@ -144,8 +147,8 @@ def _path(scope: WWWScope) -> str:
 _ws_counter = itertools.count()
 
 
-def _next_ws_id() -> int:
-    return next(_ws_counter) % 100
+def _next_ws_id() -> str:
+    return f"{next(_ws_counter) % 100:02d}"
 
 
 WS_CLOSE_CODES = {
@@ -174,133 +177,102 @@ def _http_access_log_extra(
     extra: str = "",
     method: str | None = None,
 ) -> dict[str, object]:
-    client = _client_host(scope)
-    host = _header(scope, "host") or "-"
-    path = _path(scope)
+    client_addr = _client_host(scope)
     full_path = _path(scope)
     method = method if method is not None else cast(str, scope.get("method", "-"))
-    method = scope.get("state", {}).get("access_log_method") or method
-    http_version = scope.get("http_version", "-")
-    timing = _format_duration_ms(duration * 1000)
+    method = cast(str, scope.get("state", {}).get("access_log_method") or method)
 
     try:
         status_phrase = http.HTTPStatus(status).phrase
     except ValueError:
         status_phrase = ""
-    status_with_phrase = f"{status} {status_phrase}"
 
-    client_colored = _format_client_ip(client).ljust(19)
-    status_colored = f"{_status_color(status)}{str(status).rjust(3)}{_RESET}"
-    if method == "🔌":
-        method_colored = f"{_METHOD_READ}{_pad_display('🔌', 7)}{_RESET}"
-    else:
-        method_colored = f"{_method_color(method)}{_pad_display(method, 7)}{_RESET}"
-    host_colored = f"{_HOST}{host}{_RESET}"
-    path_colored = f"{_PATH}{path}{_RESET}"
-    extra_colored = f" {_TIMING}{extra}{_RESET}" if extra else ""
-    timing_colored = f" {_TIMING}{timing}{_RESET}"
-
-    request_line = f"{method} {full_path} HTTP/{http_version}"
+    extra, timing = _format_extra_timing(extra, duration)
 
     return {
-        "client": client_colored,
-        "status": status_colored,
-        "method": method_colored,
-        "host": host_colored,
-        "path": path_colored,
-        "extra": extra_colored,
-        "timing": timing_colored,
-        "client_addr": client,
-        "status_code": status_with_phrase,
-        "request_line": request_line,
-        "http_version": http_version,
+        "client": _format_client_ip(client_addr).ljust(19),
+        "status": f"{_status_color(status)}{str(status).rjust(3)}{_RESET}",
+        "method": (
+            f"{_METHOD_READ}{_pad_display('🔌', 7)}{_RESET}"
+            if method == "🔌"
+            else f"{_method_color(method)}{_pad_display(method, 7)}{_RESET}"
+        ),
+        "host": f"{_HOST}{_header(scope, 'host') or '-'}{_RESET}",
+        "path": f"{_PATH}{full_path}{_RESET}",
+        "extra": extra,
+        "timing": timing,
+        "client_addr": client_addr,
+        "status_code": f"{status} {status_phrase}",
+        "request_line": f"{method} {full_path} HTTP/{scope.get('http_version', '-')}",
+        "http_version": scope.get("http_version", "-"),
         "full_path": full_path,
     }
 
 
 def _ws_open_extra(
     scope: WWWScope,
-    ws_id: int,
+    ws_id: str,
     origin: str | None,
     extra: str = "",
 ) -> dict[str, object]:
-    client = _client_host(scope)
-    host = _header(scope, "host") or "-"
-    path = scope.get("path", "-")
+    client_addr = _client_host(scope)
+    path = scope.get("path", "")
     full_path = _path(scope)
-    http_version = scope.get("http_version", "-")
 
     origin_host = origin.split("://", 1)[-1] if origin else None
-    show_origin = origin_host and origin_host != host
+    extra, timing = _format_extra_timing(extra)
 
-    client_colored = _format_client_ip(client).ljust(19)
-    status_colored = f"{_WS_OPEN}{str(ws_id).zfill(2).rjust(3)}{_RESET}"
-    method_colored = f"{_METHOD_READ}{_pad_display('🔌', 7)}{_RESET}"
-    host_colored = f"{_HOST}{host}{_RESET}"
-    path_colored = f"{_PATH}{path}{_RESET}"
-    origin_colored = f" {_RESET}from {_HOST}{origin_host}{_RESET}" if show_origin else ""
-    extra_colored = f" {_TIMING}{extra}{_RESET}" if extra else ""
-    timing_colored = ""
-
-    request_line = f"WebSocket {path}"
-
+    host = _header(scope, "host")
+    path = f"{_PATH}{path}{_RESET}"
+    if origin_host and origin_host != host:
+        path += f" {_RESET}from {_HOST}{origin_host}{_RESET}"
     return {
-        "client": client_colored,
-        "status": status_colored,
-        "method": method_colored,
-        "host": host_colored,
-        "path": f"{path_colored}{origin_colored}",
-        "extra": extra_colored,
-        "timing": timing_colored,
-        "client_addr": client,
-        "status_code": str(ws_id),
-        "request_line": request_line,
-        "http_version": http_version,
+        "client": _format_client_ip(client_addr).ljust(19),
+        "status": f"{_WS_OPEN} {ws_id}{_RESET}",
+        "method": f"{_METHOD_READ}{_pad_display('🔌', 7)}{_RESET}",
+        "host": f"{_HOST}{host}{_RESET}" if host else "",
+        "path": path,
+        "extra": extra,
+        "timing": timing,
+        "client_addr": client_addr,
+        "status_code": "",
+        "request_line": f"WebSocket {path}",
+        "http_version": scope.get("http_version", "-"),
         "full_path": full_path,
     }
 
 
 def _ws_close_extra(
     scope: WWWScope,
-    ws_id: int,
+    ws_id: str,
     close_code: int | None,
     duration: float,
     extra: str = "",
 ) -> dict[str, object]:
-    client = _client_host(scope)
+    client_addr = _client_host(scope)
     path = scope.get("path", "-")
     full_path = _path(scope)
-    http_version = scope.get("http_version", "-")
-    timing = _format_duration_ms(duration * 1000)
 
     if close_code is None:
-        code = "----"
-        status_text = "unknown"
+        code, status_text = "----", "unknown"
     else:
         code = str(close_code)
         status_text = WS_CLOSE_CODES.get(close_code, f"code {close_code}")
 
-    client_colored = " " * 19
-    status_colored = f"{_WS_CLOSE}{str(ws_id).zfill(2).rjust(3)}{_RESET}"
-    method_colored = f"{_TIMING}{_pad_display('closed', 7)}{_RESET}"
-    status_str = f"{code} {status_text}"
-    extra_colored = f" {_TIMING}{extra}{_RESET}" if extra else ""
-    timing_colored = f" {_TIMING}{timing}{_RESET}"
-
-    request_line = f"WebSocket {path}"
+    extra, timing = _format_extra_timing(extra, duration)
 
     return {
-        "client": client_colored,
-        "status": status_colored,
-        "method": method_colored,
+        "client": " " * 19,
+        "status": f"{_WS_CLOSE} {ws_id}{_RESET}",
+        "method": f"{_TIMING}{_pad_display('closed', 7)}{_RESET}",
         "host": "",
-        "path": status_str,
-        "extra": extra_colored,
-        "timing": timing_colored,
-        "client_addr": client,
-        "status_code": code,
-        "request_line": request_line,
-        "http_version": http_version,
+        "path": f"{code} {status_text}",
+        "extra": extra,
+        "timing": timing,
+        "client_addr": client_addr,
+        "status_code": f"{code} {status_text}",
+        "request_line": f"WebSocket {path}",
+        "http_version": scope.get("http_version", "-"),
         "full_path": full_path,
     }
 

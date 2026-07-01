@@ -418,10 +418,6 @@ class Config:
             logging.getLogger("uvicorn.error").setLevel(log_level)
             logging.getLogger("uvicorn.access").setLevel(log_level)
             logging.getLogger("uvicorn.asgi").setLevel(log_level)
-        if self.access_log is False:
-            logging.getLogger("uvicorn.access").handlers = []
-            logging.getLogger("uvicorn.access").propagate = False
-
     def load_app(self) -> Any:
         """Import the app and return it. Exits on failure."""
         try:

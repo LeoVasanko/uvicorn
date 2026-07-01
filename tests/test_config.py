@@ -451,17 +451,17 @@ def test_env_file(
 
 
 @pytest.mark.parametrize(
-    "access_log, handlers",
+    "access_log, has_middleware",
     [
-        pytest.param(True, 1, id="access log enabled should have single handler"),
-        pytest.param(False, 0, id="access log disabled shouldn't have handlers"),
+        pytest.param(True, True, id="access log enabled should load middleware"),
+        pytest.param(False, False, id="access log disabled shouldn't load middleware"),
     ],
 )
-def test_config_access_log(access_log: bool, handlers: int) -> None:
+def test_config_access_log(access_log: bool, has_middleware: bool) -> None:
     config = Config(app=asgi_app, access_log=access_log)
     config.load()
 
-    assert len(logging.getLogger("uvicorn.access").handlers) == handlers
+    assert isinstance(config.loaded_app, AccessLogMiddleware) is has_middleware
     assert config.access_log == access_log
 
 
