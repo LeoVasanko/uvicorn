@@ -21,8 +21,8 @@ from uvicorn._types import (
 )
 from uvicorn.config import Config
 from uvicorn.logging import TRACE_LOG_LEVEL
-from uvicorn.protocols.http.flow_control import CLOSE_HEADER, HIGH_WATER_LIMIT, FlowControl, service_unavailable
-from uvicorn.protocols.utils import get_client_addr, get_local_addr, get_path_with_query_string, get_remote_addr, is_ssl
+from uvicorn.protocols.http.flow_control import HIGH_WATER_LIMIT, FlowControl, service_unavailable
+from uvicorn.protocols.utils import get_local_addr, get_remote_addr, is_ssl
 from uvicorn.server import ServerState
 
 
@@ -41,8 +41,6 @@ class ZttpProtocol(asyncio.Protocol):
         self.app = config.loaded_app
         self.loop = _loop or asyncio.get_event_loop()
         self.logger = logging.getLogger("uvicorn.error")
-        self.access_logger = logging.getLogger("uvicorn.access")
-        self.access_log = self.access_logger.hasHandlers()
         self.conn = zttp.Connection(zttp.SERVER)
         self.ws_protocol_class = config.ws_protocol_class
         self.root_path = config.root_path
@@ -189,8 +187,6 @@ class ZttpProtocol(asyncio.Protocol):
                     transport=self.transport,
                     flow=self.flow,
                     logger=self.logger,
-                    access_logger=self.access_logger,
-                    access_log=self.access_log,
                     default_headers=self.server_state.default_headers,
                     message_event=asyncio.Event(),
                     expect_100_continue=event.expect_continue,
@@ -324,8 +320,6 @@ class RequestResponseCycle:
         transport: asyncio.Transport,
         flow: FlowControl,
         logger: logging.Logger,
-        access_logger: logging.Logger,
-        access_log: bool,
         default_headers: list[tuple[bytes, bytes]],
         message_event: asyncio.Event,
         expect_100_continue: bool,
@@ -336,8 +330,6 @@ class RequestResponseCycle:
         self.transport = transport
         self.flow = flow
         self.logger = logger
-        self.access_logger = access_logger
-        self.access_log = access_log
         self.default_headers = default_headers
         self.message_event = message_event
         self.on_response = on_response
@@ -423,9 +415,6 @@ class RequestResponseCycle:
             status = message["status"]
             headers = self.default_headers + list(message.get("headers", []))
 
-            if CLOSE_HEADER in self.scope["headers"] and CLOSE_HEADER not in headers:
-                headers = headers + [CLOSE_HEADER]
-
             bodyless = self.scope["method"] == "HEAD" or status in (204, 304) or status < 200
 
             # RFC 9112 §6.1 forbids Transfer-Encoding on 1xx and 204 responses, and
@@ -461,16 +450,6 @@ class RequestResponseCycle:
             if not bodyless and not has_transfer_encoding and not has_content_length:
                 self.chunked_encoding = True
                 headers = headers + [(b"transfer-encoding", b"chunked")]
-
-            if self.access_log:
-                self.access_logger.info(
-                    '%s - "%s %s HTTP/%s" %d',
-                    get_client_addr(self.scope),
-                    self.scope["method"],
-                    get_path_with_query_string(self.scope),
-                    self.scope["http_version"],
-                    status,
-                )
 
             # Write response status line and headers
             self.bodyless = bodyless
