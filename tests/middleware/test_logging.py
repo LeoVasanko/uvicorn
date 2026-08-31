@@ -17,6 +17,7 @@ from tests.utils import run_server
 from uvicorn import Config
 from uvicorn._types import ASGIReceiveCallable, ASGISendCallable, Scope
 from uvicorn.logging import AccessFormatter, strip_ansi
+from uvicorn.middleware.access_logging import _assemble_access_log, _ws_reject_extra
 
 if TYPE_CHECKING:
     import sys
@@ -341,6 +342,105 @@ async def test_websocket_http_response_access_logging(
     assert "403" in messages[0]
     assert "/" in messages[0]
     assert "ms" in messages[0]
+
+
+async def test_websocket_reject_access_logging(
+    ws_protocol_cls: WSProtocol,
+    caplog: pytest.LogCaptureFixture,
+    logging_config: dict[str, Any],
+    unused_tcp_port: int,
+):
+    """Pre-accept close logs a single open-format line (client visible, no id)."""
+
+    async def websocket_app(scope: Scope, receive: ASGIReceiveCallable, send: ASGISendCallable):
+        assert scope["type"] == "websocket"
+        while True:
+            message = await receive()
+            if message["type"] == "websocket.connect":
+                await send({"type": "websocket.close", "code": 1008})
+            elif message["type"] == "websocket.disconnect":
+                break
+
+    config = Config(
+        app=websocket_app,
+        log_config=logging_config,
+        ws=ws_protocol_cls,
+        port=unused_tcp_port,
+    )
+    with caplog_for_logger(caplog, "uvicorn.access"):
+        async with run_server(config):
+            with contextlib.suppress(Exception):
+                async with connect(f"ws://127.0.0.1:{unused_tcp_port}/reject"):
+                    pass
+
+    messages = [
+        strip_ansi(record.message)
+        for record in caplog.records
+        if record.name == "uvicorn.access" and "closed" in record.message
+    ]
+    assert len(messages) == 1
+    assert messages[0].startswith("127.0.0.1")
+    assert "-- 🔌" in messages[0]
+    assert "/reject" in messages[0]
+    assert "closed 1008 policy violation" in messages[0]
+    assert "ms" in messages[0]
+
+
+async def test_websocket_disconnect_before_accept_logging(
+    ws_protocol_cls: WSProtocol,
+    caplog: pytest.LogCaptureFixture,
+    logging_config: dict[str, Any],
+    unused_tcp_port: int,
+):
+    """Client aborting the handshake also logs the open-format reject line."""
+
+    async def websocket_app(scope: Scope, receive: ASGIReceiveCallable, send: ASGISendCallable):
+        assert scope["type"] == "websocket"
+        while True:
+            message = await receive()
+            if message["type"] == "websocket.disconnect":
+                break
+
+    config = Config(
+        app=websocket_app,
+        log_config=logging_config,
+        ws=ws_protocol_cls,
+        port=unused_tcp_port,
+    )
+    with caplog_for_logger(caplog, "uvicorn.access"):
+        async with run_server(config):
+            with contextlib.suppress(Exception):
+                # Handshake times out because the app never accepts; the client
+                # gives up and disconnects before accept.
+                async with connect(f"ws://127.0.0.1:{unused_tcp_port}", open_timeout=0.1):
+                    pass
+
+    messages = [
+        strip_ansi(record.message)
+        for record in caplog.records
+        if record.name == "uvicorn.access" and "closed" in record.message
+    ]
+    assert len(messages) == 1
+    assert messages[0].startswith("127.0.0.1")
+    assert "-- 🔌" in messages[0]
+    assert "closed" in messages[0]
+
+
+def test_ws_reject_extra_unknown_code():
+    scope = {
+        "type": "websocket",
+        "headers": [(b"host", b"example.org")],
+        "client": ("10.0.0.1", 1234),
+        "path": "/ws",
+        "query_string": b"",
+        "http_version": "1.1",
+    }
+    fields = _ws_reject_extra(scope, None, 0.005)
+    assert fields["status_code"] == "---- unknown"
+    assert "unknown" in strip_ansi(_assemble_access_log(fields))
+
+    fields = _ws_reject_extra(scope, 1001, 0.005, extra="app extra")
+    assert "closed 1001 going away app extra" in strip_ansi(_assemble_access_log(fields))
 
 
 async def test_unknown_status_code(caplog: pytest.LogCaptureFixture, unused_tcp_port: int):

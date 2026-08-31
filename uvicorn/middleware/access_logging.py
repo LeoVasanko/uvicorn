@@ -277,6 +277,39 @@ def _ws_close_extra(
     }
 
 
+def _ws_reject_extra(
+    scope: WWWScope,
+    close_code: int | None,
+    duration: float,
+    extra: str = "",
+) -> dict[str, object]:
+    """Open-format line for a connection closed before accept.
+
+    Replaces the open line (which never happened), so the client IP, host and
+    path stay visible.  No connection id is printed (ids are only assigned on
+    accept); the status column shows a dim ``--`` and the close reason rides
+    in the extra column.
+    """
+    if close_code is None:
+        code, status_text = "----", "unknown"
+    else:
+        code = str(close_code)
+        status_text = WS_CLOSE_CODES.get(close_code, f"code {close_code}")
+
+    fields = _ws_open_extra(scope, "--", _header(scope, "origin"))
+    reason = f"closed {code} {status_text}"
+    extra, timing = _format_extra_timing(f"{reason} {extra}" if extra else reason, duration)
+    fields.update(
+        {
+            "status": f"{_WS_CLOSE} --{_RESET}",
+            "extra": extra,
+            "timing": timing,
+            "status_code": f"{code} {status_text}",
+        }
+    )
+    return fields
+
+
 def _assemble_access_log(fields: dict[str, object]) -> str:
     return (
         f"{fields['client']} {fields['status']} {fields['method']}"
@@ -324,7 +357,7 @@ class AccessLogMiddleware:
         self, scope: Scope, receive: ASGIReceiveCallable, send: ASGISendCallable
     ) -> None:
         start = time.perf_counter()
-        ws_id = _next_ws_id()
+        ws_id: str | None = None  # assigned on accept; rejects print "--"
         accepted = False
         closed = False
 
@@ -334,10 +367,28 @@ class AccessLogMiddleware:
         def _extra() -> str:
             return www_scope.get("state", {}).get("log_extra", "")
 
+        def _close_fields(message: ASGIReceiveEvent | ASGISendEvent) -> dict[str, object]:
+            if accepted:
+                assert ws_id is not None
+                return _ws_close_extra(
+                    www_scope,
+                    ws_id,
+                    message.get("code"),
+                    time.perf_counter() - start,
+                    _extra(),
+                )
+            return _ws_reject_extra(
+                www_scope,
+                message.get("code"),
+                time.perf_counter() - start,
+                _extra(),
+            )
+
         async def wrapped_send(message: ASGISendEvent) -> None:
-            nonlocal accepted, closed
+            nonlocal accepted, closed, ws_id
             if message["type"] == "websocket.accept" and not accepted:
                 accepted = True
+                ws_id = _next_ws_id()
                 fields = _ws_open_extra(www_scope, ws_id, origin, _extra())
                 logger.info(_assemble_access_log(fields), extra=fields)
             elif message["type"] == "websocket.http.response.start" and not closed:
@@ -352,13 +403,7 @@ class AccessLogMiddleware:
                 logger.info(_assemble_access_log(fields), extra=fields)
             elif message["type"] == "websocket.close" and not closed:
                 closed = True
-                fields = _ws_close_extra(
-                    www_scope,
-                    ws_id,
-                    message.get("code"),
-                    time.perf_counter() - start,
-                    _extra(),
-                )
+                fields = _close_fields(message)
                 logger.info(_assemble_access_log(fields), extra=fields)
             await send(message)
 
@@ -367,13 +412,7 @@ class AccessLogMiddleware:
             message = await receive()
             if message["type"] == "websocket.disconnect" and not closed:
                 closed = True
-                fields = _ws_close_extra(
-                    www_scope,
-                    ws_id,
-                    message.get("code"),
-                    time.perf_counter() - start,
-                    _extra(),
-                )
+                fields = _close_fields(message)
                 logger.info(_assemble_access_log(fields), extra=fields)
             return message
 
