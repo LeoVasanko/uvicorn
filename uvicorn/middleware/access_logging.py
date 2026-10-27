@@ -136,11 +136,12 @@ def _client_host(scope: WWWScope) -> str:
 
 
 def _path(scope: WWWScope) -> str:
-    path = scope["path"]
+    raw_path = scope.get("raw_path")
+    path = raw_path.decode("latin-1") if raw_path else scope["path"]
     query = scope["query_string"]
     if query:
-        return f"{path}?{query.decode('latin-1')}"
-    return path
+        return f"{path}?{query.decode('latin-1')}".replace('"', "%22")
+    return path.replace('"', "%22")
 
 
 # WebSocket connection counter (mod 100)
