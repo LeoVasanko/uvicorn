@@ -7,6 +7,7 @@ import itertools
 import logging
 import time
 import unicodedata
+import urllib.parse
 from ipaddress import IPv6Address
 from typing import TYPE_CHECKING, cast
 
@@ -37,6 +38,7 @@ _PATH = "\033[38;5;250m"  # path (white)
 _TIMING = "\033[38;5;242m"  # timing/devmode (dark grey)
 _WS_OPEN = "\033[38;5;226m"  # WebSocket connect (brightest yellow)
 _WS_CLOSE = "\033[38;5;142m"  # WebSocket disconnect (dimmer yellow)
+_ESCAPED_CHAR = "\033[38;5;203m"  # escaped control characters in paths (red)
 
 
 def _display_width(text: str) -> int:
@@ -123,10 +125,10 @@ def _format_client_ip(ip: str) -> str:
 
 
 def _header(scope: WWWScope, name: str) -> str | None:
-    name_bytes = name.lower().encode("latin-1")
+    name_bytes = name.lower().encode("ascii")
     for key, value in scope["headers"]:
         if key.lower() == name_bytes:
-            return value.decode("latin-1")
+            return value.decode("ascii", errors="replace")
     return None
 
 
@@ -135,13 +137,54 @@ def _client_host(scope: WWWScope) -> str:
     return client[0] if client else "-"
 
 
-def _path(scope: WWWScope) -> str:
+def _legacy_path(scope: WWWScope) -> str:
+    """Request target rendered exactly like upstream uvicorn's access log.
+
+    The raw path is used verbatim and only double quotes are %-escaped,
+    matching upstream's ``get_path_with_query_string``. Decoded as ASCII with
+    replacement rather than upstream's latin-1: the protocol parsers already
+    reject non-ASCII request targets with a 400 before logging, so valid
+    requests render identically and the replacement only guards against a
+    logger crash if that expectation is ever broken.
+    """
     raw_path = scope.get("raw_path")
-    path = raw_path.decode("latin-1") if raw_path else scope["path"]
+    path = raw_path.decode("ascii", errors="replace") if raw_path else scope["path"]
     query = scope["query_string"]
     if query:
-        return f"{path}?{query.decode('latin-1')}".replace('"', "%22")
+        return f"{path}?{query.decode('ascii', errors='replace')}".replace('"', "%22")
     return path.replace('"', "%22")
+
+
+def _escape_control_chars(text: str, color: bool) -> str:
+    out = []
+    for char in text:
+        code = ord(char)
+        if code < 0x20 or code == 0x7F:
+            escaped = f"%{code:02X}"
+            out.append(f"{_ESCAPED_CHAR}{escaped}{_PATH}" if color else escaped)
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+def _pretty_path(scope: WWWScope, color: bool = False) -> str:
+    """Request target with percent-encoded UTF-8 decoded for display.
+
+    Invalid UTF-8 sequences and stray high bytes decode to U+FFFD rather than
+    crashing the logger. Control characters cannot occur in practice (the
+    protocol parsers reject them with a 400 before logging) but are %-escaped
+    defensively; with ``color=True`` the escapes are highlighted in a
+    distinct color.
+    """
+    raw_path = scope.get("raw_path")
+    if raw_path:
+        path = urllib.parse.unquote(raw_path, errors="replace")
+    else:
+        path = scope["path"]
+    query = scope["query_string"]
+    if query:
+        path = f"{path}?{urllib.parse.unquote(query, errors='replace')}"
+    return _escape_control_chars(path, color)
 
 
 # WebSocket connection counter (mod 100)
@@ -179,7 +222,8 @@ def _http_access_log_extra(
     method: str | None = None,
 ) -> dict[str, object]:
     client_addr = _client_host(scope)
-    full_path = _path(scope)
+    full_path = _pretty_path(scope)
+    legacy_path = _legacy_path(scope)
     method = method if method is not None else cast(str, scope.get("method", "-"))
     method = cast(str, scope.get("state", {}).get("access_log_method") or method)
 
@@ -199,12 +243,12 @@ def _http_access_log_extra(
             else f"{_method_color(method)}{_pad_display(method, 7)}{_RESET}"
         ),
         "host": f"{_HOST}{_header(scope, 'host') or '-'}{_RESET}",
-        "path": f"{_PATH}{full_path}{_RESET}",
+        "path": f"{_PATH}{_pretty_path(scope, color=True)}{_RESET}",
         "extra": extra,
         "timing": timing,
         "client_addr": client_addr,
         "status_code": f"{status} {status_phrase}",
-        "request_line": f"{method} {full_path} HTTP/{scope.get('http_version', '-')}",
+        "request_line": f"{method} {legacy_path} HTTP/{scope.get('http_version', '-')}",
         "http_version": scope.get("http_version", "-"),
         "full_path": full_path,
     }
@@ -217,14 +261,13 @@ def _ws_open_extra(
     extra: str = "",
 ) -> dict[str, object]:
     client_addr = _client_host(scope)
-    path = scope.get("path", "")
-    full_path = _path(scope)
+    full_path = _pretty_path(scope)
 
     origin_host = origin.split("://", 1)[-1] if origin else None
     extra, timing = _format_extra_timing(extra)
 
     host = _header(scope, "host")
-    path = f"{_PATH}{path}{_RESET}"
+    path = f"{_PATH}{_pretty_path(scope, color=True)}{_RESET}"
     if origin_host and origin_host != host:
         path += f" {_RESET}from {_HOST}{origin_host}{_RESET}"
     return {
@@ -251,8 +294,8 @@ def _ws_close_extra(
     extra: str = "",
 ) -> dict[str, object]:
     client_addr = _client_host(scope)
-    path = scope.get("path", "-")
-    full_path = _path(scope)
+    path = _pretty_path(scope) if "path" in scope or scope.get("raw_path") else "-"
+    full_path = _pretty_path(scope)
 
     if close_code is None:
         code, status_text = "----", "unknown"
@@ -322,9 +365,7 @@ class AccessLogMiddleware:
     def __init__(self, app: ASGI3Application) -> None:
         self.app = app
 
-    async def __call__(
-        self, scope: Scope, receive: ASGIReceiveCallable, send: ASGISendCallable
-    ) -> None:
+    async def __call__(self, scope: Scope, receive: ASGIReceiveCallable, send: ASGISendCallable) -> None:
         if scope["type"] == "http":
             return await self._handle_http(scope, receive, send)
         elif scope["type"] == "websocket":
@@ -332,9 +373,7 @@ class AccessLogMiddleware:
         else:
             return await self.app(scope, receive, send)
 
-    async def _handle_http(
-        self, scope: Scope, receive: ASGIReceiveCallable, send: ASGISendCallable
-    ) -> None:
+    async def _handle_http(self, scope: Scope, receive: ASGIReceiveCallable, send: ASGISendCallable) -> None:
         start = time.perf_counter()
         www_scope = cast("WWWScope", scope)
 
@@ -354,9 +393,7 @@ class AccessLogMiddleware:
 
         return await self.app(scope, receive, wrapped_send)
 
-    async def _handle_websocket(
-        self, scope: Scope, receive: ASGIReceiveCallable, send: ASGISendCallable
-    ) -> None:
+    async def _handle_websocket(self, scope: Scope, receive: ASGIReceiveCallable, send: ASGISendCallable) -> None:
         start = time.perf_counter()
         ws_id: str | None = None  # assigned on accept; rejects print "--"
         accepted = False

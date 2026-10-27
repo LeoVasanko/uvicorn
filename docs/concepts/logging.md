@@ -322,3 +322,10 @@ loggers:
     `uvicorn.logging.AccessFormatter`. If you use a standard
     `logging.Formatter`, use the plain `%(client_addr)s`,
     `%(request_line)s`, and `%(status_code)s` placeholders instead.
+
+The `%(path)s` and `%(full_path)s` placeholders show the request target with
+percent-encoded UTF-8 decoded for readability (e.g. `/caf%C3%A9` renders as
+`/café`), with any control characters %-escaped for safety. The
+`%(request_line)s` placeholder instead carries the raw request target
+verbatim — matching upstream uvicorn's classic access-log format — so it is
+the right choice for log formats that need to stay machine-parseable.

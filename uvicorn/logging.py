@@ -14,6 +14,7 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 def strip_ansi(text: str) -> str:
     return ANSI_ESCAPE_RE.sub("", text)
 
+
 TRACE_LOG_LEVEL = 5
 
 

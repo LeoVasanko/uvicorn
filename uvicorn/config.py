@@ -426,6 +426,7 @@ class Config:
             logging.getLogger("uvicorn.error").setLevel(log_level)
             logging.getLogger("uvicorn.access").setLevel(log_level)
             logging.getLogger("uvicorn.asgi").setLevel(log_level)
+
     def load_app(self) -> Any:
         """Import the app and return it. Exits on failure."""
         try:

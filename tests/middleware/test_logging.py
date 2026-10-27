@@ -17,7 +17,7 @@ from tests.utils import run_server
 from uvicorn import Config
 from uvicorn._types import ASGIReceiveCallable, ASGISendCallable, Scope
 from uvicorn.logging import AccessFormatter, strip_ansi
-from uvicorn.middleware.access_logging import _assemble_access_log, _ws_reject_extra
+from uvicorn.middleware.access_logging import _assemble_access_log, _pretty_path, _ws_reject_extra
 
 if TYPE_CHECKING:
     import sys
@@ -458,6 +458,36 @@ async def test_unknown_status_code(caplog: pytest.LogCaptureFixture, unused_tcp_
         assert response.status_code == 599
         messages = [record.message for record in caplog.records if record.name == "uvicorn.access"]
         assert '"GET / HTTP/1.1" 599' in messages.pop()
+
+
+async def test_access_log_path_decoding(caplog: pytest.LogCaptureFixture, unused_tcp_port: int):
+    config = Config(app=app, port=unused_tcp_port)
+    with caplog_for_logger(caplog, "uvicorn.access"):
+        async with run_server(config):
+            async with httpx2.AsyncClient() as client:
+                response = await client.get(f"http://127.0.0.1:{unused_tcp_port}/caf%C3%A9%22?x=%E2%82%AC")
+
+        assert response.status_code == 204
+        record = next(record for record in caplog.records if record.name == "uvicorn.access")
+        # Pretty fields: percent-encoded UTF-8 decoded, quotes left as-is.
+        assert record.full_path == '/café"?x=€'
+        assert '/café"?x=€' in strip_ansi(record.path)
+        # Legacy request line: raw path verbatim, matching upstream.
+        assert record.request_line == "GET /caf%C3%A9%22?x=%E2%82%AC HTTP/1.1"
+
+
+def test_pretty_path_escapes_control_chars():
+    scope = {
+        "type": "http",
+        "raw_path": b"/a\x01b\x7f",
+        "path": "/a\x01b\x7f",
+        "query_string": b"",
+        "headers": [],
+    }
+    assert _pretty_path(scope) == "/a%01b%7F"
+    colored = _pretty_path(scope, color=True)
+    assert "\033[38;5;203m%01\033[38;5;250m" in colored
+    assert strip_ansi(colored) == "/a%01b%7F"
 
 
 async def test_server_start_with_port_zero(caplog: pytest.LogCaptureFixture):
