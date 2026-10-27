@@ -137,7 +137,7 @@ class WSProtocol(asyncio.Protocol):
 
     def connection_lost(self, exc: Exception | None) -> None:
         self.stop_keepalive()
-        code = 1005 if self.handshake_complete else 1006
+        code = 1005 if self.handshake_complete and not self.response_started else 1006
         self.queue.put_nowait({"type": "websocket.disconnect", "code": code})
         self.connections.remove(self)
 
@@ -209,7 +209,7 @@ class WSProtocol(asyncio.Protocol):
                 self.close_timer = None
             self.transport.close()
             return
-        if self.handshake_complete:
+        if self.handshake_complete and not self.response_started:
             self.queue.put_nowait({"type": "websocket.disconnect", "code": 1012})
             output = self.conn.send(wsproto.events.CloseConnection(code=1012))
             self.transport.write(output)
